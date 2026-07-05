@@ -50,10 +50,10 @@ Tick an item only when its code exists **and** its test passes. Full context in
 - [x] **Jul 11 checkpoint: working testnet demo** — done six days early
 
 ### Stage 1.5 — Frontend + UX
-- [ ] PasskeyKit onboarding (Face-ID wallet) — 🚧 blocked on Launchtube token
+- [ ] PasskeyKit onboarding (Face-ID wallet) — 🚧 blocked on Launchtube token (Freighter shipped as interim wallet, ADR-013)
 - [ ] Launchtube fee sponsorship wired — 🚧 blocked on Launchtube token
-- [ ] Folio page: composition donut, live NAV (5s poll), user shares & P&L
-- [ ] Mint/redeem flows with asset-ratio helper
+- [x] Folio page: composition donut, live NAV (5s poll), user shares & position value (`app/`, builds clean, live-testnet read smoke test passing)
+- [x] Mint/redeem flows with asset-ratio helper (simulate-first quote shows exact deposits; 0.5% buffered `max_deposits`) — ⏳ browser-manual test with funded Freighter pending (Stage 1.6 beta)
 - [~] Second source + divergence breaker live on testnet (median router `CBOB27…JWWM` + DIA *stand-in* mock feed; folio repointed via `set_router`) — swap stand-in for real DIA testnet contract when its address is confirmed
 
 ### Stage 1.6 — Testnet beta

@@ -16,6 +16,7 @@ contracts/folio               the DTF: basket custody + SEP-41 share token + min
 contracts/factory             deploys folios from a versioned wasm hash, registry
 contracts/mock-price-feed     settable SEP-40 feed (tests/testnet only — never mainnet)
 scripts/                      build+test, testnet bootstrap, price refresh
+app/                          folio web app (Vite+React; `npm run dev`; Freighter wallet)
 ```
 
 ## Build & test

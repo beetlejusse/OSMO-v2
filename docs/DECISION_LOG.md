@@ -85,6 +85,16 @@ Prices come from `MockPriceFeed` (never deployed to mainnet). The router's per-t
 **Why:** AQUA/VELO have no official testnet issuances (confirmed with user 2026-07-05); the
 `T` prefix makes the mimicked asset obvious at a glance.
 
+### ADR-013 — Frontend: dynamic contract client + Freighter interim wallet
+**Decision:** The web app uses `contract.Client.from` (fetches the contract spec from the
+chain at runtime) instead of generated TypeScript bindings, and ships with **Freighter** as
+the interim wallet so the testnet beta can start. PasskeyKit + Launchtube slot in behind the
+same `connectWallet()` seam once the Launchtube token arrives.
+**Why:** No bindings package to regenerate on every contract change; Freighter needs zero
+external approvals. The mint "asset-ratio helper" is free with this design: simulating
+`mint` returns the exact required deposits, which the UI shows before the user signs
+(then sends with a 0.5% `max_deposits` buffer).
+
 ---
 
 ## Part 2 — Build Log
@@ -157,4 +167,22 @@ Prices come from `MockPriceFeed` (never deployed to mainnet). The router's per-t
 - **Deferred:** real DIA testnet feed (need their verified contract address — the stand-in is
   interface-identical); `#[contractevent]` migration (cosmetic warnings).
 - **Changed vs plan:** none — this closes the two Stage-1.1 items deferred by ADR-010.
+
+### [2026-07-05] Stage 1.5 (app half) — folio web app built; review fix; initial commits
+- **Built:** `app/` — Vite + React + TS single-page folio dashboard: NAV/total-value/supply
+  cards on a 5s poll, SVG weights donut + holdings table, wallet connect (Freighter),
+  simulate-first mint quote → confirm with 0.5% buffered `max_deposits`, redeem, position
+  value, oracle-guard surfacing (a tripped breaker shows "NAV unavailable" instead of
+  breaking the page). `npm run build` clean; `smoke.mjs` verifies the dynamic client against
+  the live testnet folio (NAV/assets/supply reads).
+- **Review pass:** full codebase read-through. One defect found+fixed: `redeem` with zero
+  supply hit divide-by-zero (host trap) instead of a clean `NotBootstrapped` error —
+  regression test added (31 tests total). Stale router-v1 test snapshots purged.
+- **Commits:** repo history started — docs / contracts / scripts / snapshots-cleanup / app.
+- **Decisions this stage:** ADR-013 (dynamic client + Freighter interim).
+- **Deferred:** PasskeyKit + Launchtube (🚧 external token, the only open Phase-1 gate);
+  browser-manual test of mint/redeem with a funded Freighter account (cohort beta,
+  Stage 1.6); bundle code-splitting (stellar-sdk is 349KB gzipped — acceptable).
+- **External deps touched:** npm registry (React 19, stellar-sdk 14, freighter-api 4,
+  Vite 6); Node 22.13 local.
 ```

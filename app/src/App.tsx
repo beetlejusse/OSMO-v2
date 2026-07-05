@@ -1,0 +1,276 @@
+import { useCallback, useEffect, useState } from "react";
+import { PRICE_DECIMALS, SHARE_DECIMALS, TOKEN_INFO } from "./config";
+import {
+  AssetInfo,
+  NavInfo,
+  connectWallet,
+  fetchAssets,
+  fetchBalances,
+  fetchNav,
+  fetchShareBalance,
+  fetchTotalSupply,
+  fmtUnits,
+  parseUnits,
+  quoteMint,
+  sendMint,
+  sendRedeem,
+} from "./lib/folio";
+
+const POLL_MS = 5000;
+
+function tokenSymbol(id: string): string {
+  return TOKEN_INFO[id]?.symbol ?? `${id.slice(0, 4)}…${id.slice(-4)}`;
+}
+
+/** SVG donut of target weights. */
+function Donut({ assets }: { assets: AssetInfo[] }) {
+  const R = 40;
+  const C = 2 * Math.PI * R;
+  let offset = 0;
+  return (
+    <svg viewBox="0 0 100 100" className="donut" role="img" aria-label="Basket composition">
+      {assets.map((a) => {
+        const frac = a.weight_bps / 10_000;
+        const seg = (
+          <circle
+            key={a.token}
+            cx="50"
+            cy="50"
+            r={R}
+            fill="none"
+            stroke={TOKEN_INFO[a.token]?.color ?? "#888"}
+            strokeWidth="14"
+            strokeDasharray={`${frac * C} ${C}`}
+            strokeDashoffset={-offset}
+            transform="rotate(-90 50 50)"
+          />
+        );
+        offset += frac * C;
+        return seg;
+      })}
+    </svg>
+  );
+}
+
+export default function App() {
+  const [assets, setAssets] = useState<AssetInfo[]>([]);
+  const [nav, setNav] = useState<NavInfo | null>(null);
+  const [balances, setBalances] = useState<bigint[]>([]);
+  const [supply, setSupply] = useState<bigint>(0n);
+  const [wallet, setWallet] = useState<string>("");
+  const [myShares, setMyShares] = useState<bigint>(0n);
+  const [status, setStatus] = useState<string>("");
+  const [navError, setNavError] = useState<string>("");
+
+  const [mintShares, setMintShares] = useState("");
+  const [quote, setQuote] = useState<bigint[] | null>(null);
+  const [redeemShares, setRedeemShares] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [n, b, s] = await Promise.all([fetchNav(), fetchBalances(), fetchTotalSupply()]);
+      setNav(n);
+      setBalances(b);
+      setSupply(s);
+      setNavError("");
+      if (wallet) setMyShares(await fetchShareBalance(wallet));
+    } catch (e: any) {
+      // a tripped oracle breaker (stale/divergent) fails nav() — surface it
+      setNavError(String(e?.message ?? e));
+    }
+  }, [wallet]);
+
+  useEffect(() => {
+    fetchAssets().then(setAssets).catch((e) => setStatus(String(e)));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, POLL_MS);
+    return () => clearInterval(t);
+  }, [refresh]);
+
+  async function onConnect() {
+    try {
+      setWallet(await connectWallet());
+      setStatus("");
+    } catch (e: any) {
+      setStatus(`Wallet: ${e.message ?? e}`);
+    }
+  }
+
+  async function onQuote() {
+    if (!wallet || !mintShares) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      setQuote(await quoteMint(wallet, parseUnits(mintShares, SHARE_DECIMALS), assets.length));
+    } catch (e: any) {
+      setStatus(`Quote failed: ${e.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onMint() {
+    if (!wallet || !quote || !mintShares) return;
+    setBusy(true);
+    setStatus("Submitting mint…");
+    try {
+      await sendMint(wallet, parseUnits(mintShares, SHARE_DECIMALS), quote);
+      setStatus(`Minted ${mintShares} shares ✓`);
+      setQuote(null);
+      setMintShares("");
+      await refresh();
+    } catch (e: any) {
+      setStatus(`Mint failed: ${e.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRedeem() {
+    if (!wallet || !redeemShares) return;
+    setBusy(true);
+    setStatus("Submitting redeem…");
+    try {
+      const outs = await sendRedeem(wallet, parseUnits(redeemShares, SHARE_DECIMALS));
+      setStatus(
+        `Redeemed ✓ received: ${outs
+          .map((o, i) => `${fmtUnits(o, 7)} ${tokenSymbol(assets[i]?.token ?? "")}`)
+          .join(", ")}`,
+      );
+      setRedeemShares("");
+      await refresh();
+    } catch (e: any) {
+      setStatus(`Redeem failed: ${e.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main>
+      <header>
+        <h1>
+          Nebula <span className="accent">DTF</span>
+        </h1>
+        {wallet ? (
+          <code className="wallet">{wallet.slice(0, 4)}…{wallet.slice(-4)}</code>
+        ) : (
+          <button onClick={onConnect}>Connect Freighter</button>
+        )}
+      </header>
+
+      <section className="card">
+        <h2>Stellar Ecosystem Folio (SEF)</h2>
+        {navError ? (
+          <p className="warn">NAV unavailable (oracle guard): {navError}</p>
+        ) : nav ? (
+          <div className="navrow">
+            <div>
+              <div className="label">NAV / share</div>
+              <div className="big">${fmtUnits(nav.per_share, PRICE_DECIMALS, 6)}</div>
+            </div>
+            <div>
+              <div className="label">Total value</div>
+              <div className="big">${fmtUnits(nav.total_value, PRICE_DECIMALS, 2)}</div>
+            </div>
+            <div>
+              <div className="label">Shares outstanding</div>
+              <div className="big">{fmtUnits(supply, SHARE_DECIMALS, 2)}</div>
+            </div>
+          </div>
+        ) : (
+          <p>Loading…</p>
+        )}
+      </section>
+
+      <section className="card composition">
+        <Donut assets={assets} />
+        <table>
+          <thead>
+            <tr>
+              <th>Asset</th>
+              <th>Target</th>
+              <th>Held by folio</th>
+            </tr>
+          </thead>
+          <tbody>
+            {assets.map((a, i) => (
+              <tr key={a.token}>
+                <td>
+                  <span className="dot" style={{ background: TOKEN_INFO[a.token]?.color ?? "#888" }} />
+                  {tokenSymbol(a.token)}
+                </td>
+                <td>{(a.weight_bps / 100).toFixed(1)}%</td>
+                <td>{balances[i] !== undefined ? fmtUnits(balances[i], a.decimals, 2) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="card">
+        <h2>Your position</h2>
+        <p>
+          {wallet
+            ? `${fmtUnits(myShares, SHARE_DECIMALS, 4)} SEF` +
+              (nav ? ` ≈ $${fmtUnits((myShares * nav.per_share) / 10n ** BigInt(SHARE_DECIMALS), PRICE_DECIMALS, 2)}` : "")
+            : "Connect a wallet to see your shares."}
+        </p>
+
+        <div className="actions">
+          <div>
+            <h3>Mint</h3>
+            <input
+              placeholder="shares e.g. 5"
+              value={mintShares}
+              onChange={(e) => {
+                setMintShares(e.target.value);
+                setQuote(null);
+              }}
+              disabled={busy}
+            />
+            {quote ? (
+              <>
+                <ul className="quote">
+                  {quote.map((d, i) => (
+                    <li key={i}>
+                      {fmtUnits(d, 7)} {tokenSymbol(assets[i]?.token ?? "")}
+                    </li>
+                  ))}
+                </ul>
+                <button onClick={onMint} disabled={busy || !wallet}>
+                  Confirm mint
+                </button>
+              </>
+            ) : (
+              <button onClick={onQuote} disabled={busy || !wallet || !mintShares}>
+                Quote deposits
+              </button>
+            )}
+          </div>
+          <div>
+            <h3>Redeem</h3>
+            <input
+              placeholder="shares e.g. 5"
+              value={redeemShares}
+              onChange={(e) => setRedeemShares(e.target.value)}
+              disabled={busy}
+            />
+            <button onClick={onRedeem} disabled={busy || !wallet || !redeemShares}>
+              Redeem
+            </button>
+          </div>
+        </div>
+        {status && <p className="status">{status}</p>}
+      </section>
+
+      <footer>
+        Testnet · proportional mint/redeem, no swaps · redemption is never pausable
+      </footer>
+    </main>
+  );
+}
