@@ -222,20 +222,26 @@ mainnet** (nobody trades real assets against a private pool). Seeding the real, 
 Router is a testnet-only scaffolding step; the mainnet code path needs no such step at all
 since real AQUA/EURC/USDC/XLM liquidity already exists there.
 
-**Seeding plan — hub-and-spoke via XLM, 4 pools:** since XLM is already one of the 5 basket
-assets, pairing every other asset against it (rather than all 10 possible pairs) gives every
-asset a 1-hop path to XLM and a 2-hop path to any other asset — exactly what `mint_single_asset`
-needs, at minimum cost. `XLM/tstAQUA`, `XLM/tstVELO`, `XLM/tstUSDC`, `XLM/tstEURC`, each one
-`add_liquidity` call sized off the live relayed prices we already have (`price-relay.ps1`) so
-initial pool ratios aren't degenerate. Not yet built — a `scripts/seed-pools.ps1` companion to
-`setup-testnet.ps1`, same idempotent-rerun conventions.
+**Seeding plan — hub-and-spoke via XLM, 4 pools. Done and verified live (2026-07-06).** Since
+XLM is already one of the 5 basket assets, pairing every other asset against it (rather than
+all 10 possible pairs) gives every asset a 1-hop path to XLM and a 2-hop path to any other
+asset — exactly what `mint_single_asset` needs, at minimum cost. Built `scripts/seed-pools.ps1`
+(idempotent — skips any pair with existing reserves) and ran it against the real testnet
+Router; all 4 pools (`XLM/tstAQUA`, `XLM/tstVELO`, `XLM/tstUSDC`, `XLM/tstEURC`) now hold real
+reserves, each sized to ~$100/leg from the live relayed prices. Addresses in `DEPLOYMENT.md`.
+Proof the gate held before building the script: manually called `add_liquidity` once for
+`XLM/tstUSDC` first — it succeeded on the first attempt, and the exact deterministic pair
+address that had returned `Contract not found` moments earlier now returns real reserves.
+Confirms conclusively: no custom pool contract needed, exactly as reasoned above.
 
 **Testnet dashboard, confirmed real (2026-07-06):** `https://testnet.soroswap.finance/pools` —
 same nav (Swap/Pools/Earn/Bridge/Info) as the mainnet app. Verified genuinely testnet-wired
 (not just named that) by pulling its JS bundle directly and finding Stellar's real testnet
-passphrase (`Test SDF Network ; September 2015`) embedded in the compiled code. Once
-`seed-pools.ps1` runs, our 4 pools should be visible there — a visual sanity check with no
-CLI queries needed.
+passphrase (`Test SDF Network ; September 2015`) embedded in the compiled code. Our 4 pools
+should now be visible there.
+
+**Next step, not yet built:** the `mint_single_asset` Folio function itself (design above)
+can now be implemented against real, live pools instead of a hypothetical.
 
 **Folio contract design** — new function, additive (doesn't touch existing `mint`):
 

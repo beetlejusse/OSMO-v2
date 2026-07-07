@@ -292,3 +292,21 @@ intermediate values exceed int64).
 - **Deferred:** still no manual browser click-through (script-verified only, both the
   trustline fix and now the faucet); rate-limiting the faucet (not needed yet, low expected
   usage during a hackathon).
+
+### [2026-07-06] Soroswap testnet pools seeded — gate proven before building
+- **Gate condition (set by user):** only build the seeding script if a pool can actually be
+  created via API calls alone — no custom AMM contract as a fallback. Tested by hand first:
+  one manual `add_liquidity` call for `XLM/tstUSDC` on the real testnet Router
+  (`CCJUD55...E7BRD`) succeeded on the first attempt. Confirmed conclusively by re-checking the
+  exact deterministic pair address that had returned `Contract not found` minutes earlier in
+  the previous session — it now returns real reserves `[100 tstUSDC, 512 XLM]`. Gate cleared.
+- **Built:** `scripts/seed-pools.ps1` — seeds all 4 hub-via-XLM pools, idempotent (checks
+  `get_reserves` first, skips anything already seeded), amounts computed from live relayed
+  prices (`price-relay.ps1`) targeting ~$100/leg, `[bigint]` math same as the bootstrap-deposit
+  formula. Ran it: correctly skipped the already-seeded USDC pool, seeded the other 3
+  (tstAQUA, tstVELO, tstEURC) cleanly, zero errors, first run.
+- **Result:** all 4 pools live with real reserves — addresses and amounts in `DEPLOYMENT.md`.
+  Confirms the whole "seed real Soroswap instead of building our own AMM" plan from the prior
+  session's research, not just in theory but with real transactions on real infrastructure.
+- **Deferred:** the `mint_single_asset` Folio function itself — the pools existing is the
+  prerequisite, not the feature. Next actual build step.
