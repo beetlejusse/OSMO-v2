@@ -2,15 +2,21 @@
 # Issues clearly-named test tokens, deploys the whole contract stack, creates
 # the Stellar Ecosystem Folio and bootstraps it with a ratio-correct deposit.
 #
-# Test-token naming (ADR-012): T<code> = "Test <code>", each mimicking a real
-# Stellar asset. XLM uses the REAL native testnet asset (friendbot-funded).
-#   TAQUA -> AQUA (aqua.network)   TVELO -> VELO (velo.org)
-#   TUSDC -> USDC (Circle)         TEURC -> EURC (Circle)
+# Test-token naming (ADR-012, revised 2026-07-06): tst<CODE>, each mimicking a
+# real Stellar asset whose PRICE is relayed live from mainnet Reflector
+# (see price-relay.ps1) - a testnet contract can never call a mainnet
+# contract on-chain, so instead an off-chain read here feeds our own testnet
+# MockPriceFeed. XLM uses the REAL native testnet asset (friendbot-funded).
+#   tstAQUA -> AQUA (aqua.network, live Reflector price)
+#   tstEURC -> EURC (Circle, live Reflector price)
+#   tstUSDC -> USDC (Circle, fixed $1.00 - it's this oracle's own base asset)
+#   tstVELO -> VELO (velo.org, NOT covered by Reflector - simulated placeholder)
 #
 # Run once. Requires: stellar CLI on PATH, wasm built (scripts\test.ps1).
 
 $ErrorActionPreference = "Stop"
 $Network = "testnet"
+. "$PSScriptRoot\price-relay.ps1"
 
 function Invoke-Stellar {
     # local EAP: CLI logs status to stderr; under Stop + any redirection those
@@ -33,15 +39,9 @@ $issuer = & stellar keys address nebula-test-issuer
 $user   = & stellar keys address nebula-user
 
 Write-Host "== 2. Test tokens: trustlines, SAC deploys"
-# mimicked asset -> [code, mock USD price at 14 decimals]
-$tokens = [ordered]@{
-    TAQUA = "40000000000"        # $0.0004  (AQUA)
-    TVELO = "2000000000000"      # $0.02    (VELO)
-    TUSDC = "100000000000000"    # $1.00    (USDC)
-    TEURC = "108000000000000"    # $1.08    (EURC)
-}
+$codes = @("tstAQUA", "tstVELO", "tstUSDC", "tstEURC")
 $sacIds = [ordered]@{}
-foreach ($code in $tokens.Keys) {
+foreach ($code in $codes) {
     # user must trust the classic asset before SAC can mint to their G-address
     Invoke-Stellar tx new change-trust --source nebula-user --line "${code}:${issuer}" --network $Network
     $sacIds[$code] = (& stellar contract asset deploy --asset "${code}:${issuer}" --source nebula-test-issuer --network $Network)
@@ -55,48 +55,50 @@ $xlmSac = Invoke-Stellar contract id asset --asset native --network $Network
 Write-Host "  XLM (native) SAC: $xlmSac"
 
 Write-Host "== 3. Mint dev balances to nebula-user"
-Invoke-Stellar contract invoke --id $sacIds.TAQUA --source nebula-test-issuer --network $Network '--' mint --to $user --amount 10000000000000   # 1,000,000 TAQUA
-Invoke-Stellar contract invoke --id $sacIds.TVELO --source nebula-test-issuer --network $Network '--' mint --to $user --amount 100000000000     # 10,000 TVELO
-Invoke-Stellar contract invoke --id $sacIds.TUSDC --source nebula-test-issuer --network $Network '--' mint --to $user --amount 10000000000      # 1,000 TUSDC
-Invoke-Stellar contract invoke --id $sacIds.TEURC --source nebula-test-issuer --network $Network '--' mint --to $user --amount 10000000000      # 1,000 TEURC
+Invoke-Stellar contract invoke --id $sacIds.tstAQUA --source nebula-test-issuer --network $Network '--' mint --to $user --amount 10000000000000   # 1,000,000 tstAQUA
+Invoke-Stellar contract invoke --id $sacIds.tstVELO --source nebula-test-issuer --network $Network '--' mint --to $user --amount 100000000000     # 10,000 tstVELO
+Invoke-Stellar contract invoke --id $sacIds.tstUSDC --source nebula-test-issuer --network $Network '--' mint --to $user --amount 10000000000      # 1,000 tstUSDC
+Invoke-Stellar contract invoke --id $sacIds.tstEURC --source nebula-test-issuer --network $Network '--' mint --to $user --amount 10000000000      # 1,000 tstEURC
 
-Write-Host "== 4. Mock price feeds x2 (primary = Reflector stand-in, secondary = DIA stand-in;"
-Write-Host "      test tokens aren't on Reflector. XLM could use the real Reflector testnet feed"
-Write-Host "      CAVLP5DH2GJPZMVO7IJY4CVOD5MWEFTJFVPD2YY2FQXOQHRGHK4D6HLP - mock keeps dev deterministic)"
+Write-Host "== 4. MockPriceFeed, stamped with LIVE mainnet-relayed prices (single feed - DIA dropped)"
 $feed = Invoke-Stellar contract deploy --wasm target\wasm32v1-none\release\nebula_mock_price_feed.wasm --source nebula-admin --network $Network '--' --admin $admin --decimals 14
-$feedDia = Invoke-Stellar contract deploy --wasm target\wasm32v1-none\release\nebula_mock_price_feed.wasm --source nebula-admin --network $Network '--' --admin $admin --decimals 14
-Write-Host "  MockPriceFeed (primary): $feed"
-Write-Host "  MockPriceFeed (DIA stand-in): $feedDia"
+Write-Host "  MockPriceFeed: $feed"
 
 $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-$prices = [ordered]@{ $xlmSac = "40000000000000" }   # XLM $0.40
-foreach ($code in $tokens.Keys) { $prices[$sacIds[$code]] = $tokens[$code] }
+$live = Get-RelayedPrices
+$prices = [ordered]@{
+    $xlmSac          = $live.XLM
+    $sacIds.tstAQUA  = $live.AQUA
+    $sacIds.tstVELO  = $live.VELO
+    $sacIds.tstUSDC  = $live.USDC
+    $sacIds.tstEURC  = $live.EURC
+}
 foreach ($id in $prices.Keys) {
     # literal \" so Windows native arg parsing delivers real quotes to the CLI
     $assetJson = '{\"Stellar\":\"' + $id + '\"}'
     Invoke-Stellar contract invoke --id $feed --source nebula-admin --network $Network '--' set_price --asset $assetJson --price $prices[$id] --timestamp $now
-    Invoke-Stellar contract invoke --id $feedDia --source nebula-admin --network $Network '--' set_price --asset $assetJson --price $prices[$id] --timestamp $now
 }
 
-Write-Host "== 5. OracleRouter v2 (median of 2 feeds, 5% divergence breaker, allow_single;"
-Write-Host "      max_age 24h for dev; prices refresh via scripts\refresh-prices.ps1)"
+Write-Host "== 5. OracleRouter v2 (single real feed per token; max_age 24h for dev;"
+Write-Host "      re-relay via scripts\refresh-prices.ps1 when it goes stale)"
 $router = Invoke-Stellar contract deploy --wasm target\wasm32v1-none\release\nebula_oracle_router.wasm --source nebula-admin --network $Network '--' --admin $admin --max_age_secs 86400 --max_divergence_bps 500 --allow_single true
 Write-Host "  OracleRouter: $router"
 foreach ($id in $prices.Keys) {
     $assetJson = '{\"Stellar\":\"' + $id + '\"}'
-    $feedsJson = '[[\"' + $feed + '\",' + $assetJson + '],[\"' + $feedDia + '\",' + $assetJson + ']]'
+    $feedsJson = '[[\"' + $feed + '\",' + $assetJson + ']]'
     Invoke-Stellar contract invoke --id $router --source nebula-admin --network $Network '--' set_feeds --token $id --feeds $feedsJson
 }
 
-Write-Host "== 6. Factory + Stellar Ecosystem Folio (XLM 40 / TAQUA 20 / TVELO 15 / TUSDC 15 / TEURC 10)"
+Write-Host "== 6. Factory + Stellar Ecosystem Folio (XLM 40 / tstAQUA 20 / tstVELO 15 / tstUSDC 15 / tstEURC 10)"
 $wasmHash = Invoke-Stellar contract upload --wasm target\wasm32v1-none\release\nebula_folio.wasm --source nebula-admin --network $Network
 $factory = Invoke-Stellar contract deploy --wasm target\wasm32v1-none\release\nebula_factory.wasm --source nebula-admin --network $Network '--' --admin $admin --folio_wasm_hash $wasmHash
 Write-Host "  Factory: $factory"
 
 $salt = -join ((1..64) | ForEach-Object { "{0:x}" -f (Get-Random -Max 16) })
-$ids = @($xlmSac, $sacIds.TAQUA, $sacIds.TVELO, $sacIds.TUSDC, $sacIds.TEURC)
+$ids = @($xlmSac, $sacIds.tstAQUA, $sacIds.tstVELO, $sacIds.tstUSDC, $sacIds.tstEURC)
+$weightsBps = @(4000, 2000, 1500, 1500, 1000)
 $folioTokens  = '[\"' + ($ids -join '\",\"') + '\"]'
-$folioWeights = "[4000,2000,1500,1500,1000]"
+$folioWeights = "[" + ($weightsBps -join ",") + "]"
 $folio = Invoke-Stellar contract invoke --id $factory --source nebula-admin --network $Network '--' create_folio `
     --salt $salt --folio_admin $admin --router $router `
     --name "Stellar Ecosystem Folio" --symbol "SEF" `
@@ -104,20 +106,29 @@ $folio = Invoke-Stellar contract invoke --id $factory --source nebula-admin --ne
 $folio = $folio.Trim('"')
 Write-Host "  Folio (SEF): $folio"
 
-Write-Host "== 7. Bootstrap: ~`$100 at target ratio from nebula-user"
-# $40 XLM=100, $20 TAQUA=50k, $15 TVELO=750, $15 TUSDC=15, $10 TEURC~=9.259
-$deposits = '[\"1000000000\",\"500000000000\",\"7500000000\",\"150000000\",\"92590000\"]'
-Invoke-Stellar contract invoke --id $folio --source nebula-user --network $Network '--' init_mint --user $user --deposits $deposits
+Write-Host "== 7. Bootstrap: ~`$100 at target ratio, deposit amounts computed from the live prices above"
+# deposit_units (7-dec) = TOTAL_USD * weight_bps * 10^17 / price_14dec  (see DECISION_LOG for derivation)
+$TOTAL_USD = [bigint]100
+$TEN17 = [bigint]::Parse("100000000000000000")
+$priceList = @($live.XLM, $live.AQUA, $live.VELO, $live.USDC, $live.EURC)
+$deposits = for ($i = 0; $i -lt $ids.Length; $i++) {
+    $price = [bigint]::Parse($priceList[$i])
+    $weight = [bigint]$weightsBps[$i]
+    (($TOTAL_USD * $weight * $TEN17) / $price).ToString()
+}
+Write-Host "  Deposits (7-dec units): $($deposits -join ', ')"
+$depositsJson = '[\"' + ($deposits -join '\",\"') + '\"]'
+Invoke-Stellar contract invoke --id $folio --source nebula-user --network $Network '--' init_mint --user $user --deposits $depositsJson
 Invoke-Stellar contract invoke --id $folio --source nebula-user --network $Network '--' nav
 
 Write-Host ""
 Write-Host "== DONE. Addresses (also written to .stellar\nebula-testnet.json):"
 $out = [ordered]@{
     network = $Network; admin = $admin; issuer = $issuer; user = $user
-    xlm_sac = $xlmSac; mock_feed = $feed; mock_feed_dia = $feedDia
+    xlm_sac = $xlmSac; mock_feed = $feed
     router = $router; factory = $factory; folio_sef = $folio
 }
-foreach ($code in $tokens.Keys) { $out["sac_$($code.ToLower())"] = $sacIds[$code] }
+foreach ($code in $codes) { $out["sac_$($code.ToLower())"] = $sacIds[$code] }
 New-Item -ItemType Directory -Force .stellar | Out-Null
 $out | ConvertTo-Json | Out-File -Encoding utf8 .stellar\nebula-testnet.json
 $out | Format-Table
