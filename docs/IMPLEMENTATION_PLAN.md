@@ -164,12 +164,85 @@ BENJI, fees, governance. Roadmap slides, not code.
 - **Axelar ITS** for wETH/wBTC/wSOL (lock-and-mint → axl* tokens on Stellar). Use the
   shipped Gateway / TokenManager / GasService / InterchainTokenService — **no custom bridge**.
 - **Allbridge Core** for native USDC (liquidity pools, no wrapping).
-- **Single-asset deposit via Soroswap aggregator** (deposit USDC → contract buys basket,
-  `out_min` on every leg).
+- **Single-asset deposit via Soroswap** — see §2.4 below for the verified, concrete design.
 - Cross-chain Folios are a **separate, labeled** product surface (bridge risk stacks on
   contract risk); native-only Folios stay the default.
 - New contract-side surface: an inbound hook the ITS TokenManager calls when wrapped tokens
   land at the Folio, which then updates the basket and mints shares to the user.
+
+### 2.4 Single-asset deposit — verified design (2026-07-06)
+
+**Mechanism, confirmed against the real contract source** (`soroswap/core` on GitHub — this is
+a close architectural mirror of Uniswap V2, confirmed by Soroswap's own docs): the
+`SoroswapRouter` is path-based, multi-hop, permissionless — anyone can add liquidity, anyone
+can swap, no allowlisting. The functions we need:
+
+```rust
+// exact output, bounded input - what we want: "I need exactly deposit_i units of
+// this basket asset; don't spend more than X of my input asset getting there"
+fn swap_tokens_for_exact_tokens(
+    e: Env, amount_out: i128, amount_in_max: i128,
+    path: Vec<Address>, to: Address, deadline: u64,
+) -> Result<Vec<i128>, CombinedRouterError>;
+
+// read-only quote, for the UI's "quote" step and for sizing amount_in_max
+fn router_get_amounts_in(e: Env, amount_out: i128, path: Vec<Address>) -> Result<Vec<i128>, ...>;
+```
+
+**Verified live addresses** (both confirmed reachable on-chain, 2026-07-06):
+
+| | Testnet | Mainnet |
+|---|---|---|
+| Router | `CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD` | `CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH` |
+| Factory | `CDP3HMUH6SMS3S7NPGNDJLULCOXXEPSHY4JKUKMBNQMATHDHWXRRJTBY` | `CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2` |
+
+**Critical finding, confirmed by direct testing — do not skip this when implementing:**
+`router_pair_for(token_a, token_b)` is a **deterministic address computation** (CREATE2-style,
+same as Uniswap V2's `pairFor`), not an existence check. It returns an address whether or not
+a real pool lives there. Proven directly: called it for `XLM`/`tstUSDC`, got back
+`CAO4ISEQ5PO3TCXOTDYI3OMZVE3OKNFDJUKWQ43PR4P36XSW5KHMY5G3`, then called `get_reserves()` on
+that address — **`Contract not found`**. No pool exists. This is expected and exactly mirrors
+the oracle problem (Challenge 2): our basket tokens are self-issued and private, so **no
+outside liquidity provider has ever touched them, on any DEX.** On mainnet this is a non-issue
+— the real AQUA/EURC/USDC/XLM already have genuine Soroswap liquidity. On testnet, we would
+have to seed our own pools first (permissionless — `add_liquidity` auto-creates the pair via
+the factory on first call, same as Uniswap V2) purely so there's something for the code to
+swap against; this is testnet-only scaffolding, never a mainnet step.
+
+**Folio contract design** — new function, additive (doesn't touch existing `mint`):
+
+```
+mint_single_asset(user, deposit_token, deposit_amount, shares_out, max_deposit_amount, deadline)
+  for each basket asset i (parallel to get_assets()):
+    deposit_i = ceil(balance_i * shares_out / supply)          // same formula as mint()
+    if asset_i == deposit_token:
+      running_total += deposit_i                                // no swap - direct leg
+    else:
+      path = [deposit_token, asset_i]                            // or multi-hop if no direct pair
+      amount_in = router.swap_tokens_for_exact_tokens(
+                    amount_out: deposit_i,
+                    amount_in_max: <per-leg share of max_deposit_amount>,
+                    path, to: this_contract, deadline)
+      running_total += amount_in
+  require running_total <= max_deposit_amount                    // overall slippage guard
+  pull `running_total` of deposit_token from user (only what was actually spent)
+  Base::mint(user, shares_out)
+```
+
+**Design notes:**
+- Pull-after-swap (not pull-then-swap) keeps the user's authorized transfer amount exact —
+  they never approve more than what actually got spent, refund logic isn't needed.
+- Every leg keeps its own `amount_in_max` (a per-asset slice of the user's overall bound) so
+  one illiquid pair can't quietly eat the whole slippage budget meant for the others.
+- Whole operation is atomic — if any leg's pool lacks liquidity or slippage exceeds its bound,
+  the router call fails and the entire mint reverts. No partial baskets.
+- Real risk worth flagging before building: up to 4 sequential cross-contract swap calls in
+  one transaction is meaningfully more CPU/resource-heavy than the current single proportional
+  mint — needs checking against Soroban's per-transaction resource limits in practice, not
+  just assumed to fit.
+- UI quoting mirrors the existing pattern: call `router_get_amounts_in` per leg up front (same
+  role as today's `quoteMint` simulate-first flow) so the user sees the real expected total
+  cost before signing.
 
 ### Phase 3 — Regulated-asset baskets (2027)
 
