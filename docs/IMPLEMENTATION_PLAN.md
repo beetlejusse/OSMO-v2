@@ -230,6 +230,13 @@ needs, at minimum cost. `XLM/tstAQUA`, `XLM/tstVELO`, `XLM/tstUSDC`, `XLM/tstEUR
 initial pool ratios aren't degenerate. Not yet built — a `scripts/seed-pools.ps1` companion to
 `setup-testnet.ps1`, same idempotent-rerun conventions.
 
+**Testnet dashboard, confirmed real (2026-07-06):** `https://testnet.soroswap.finance/pools` —
+same nav (Swap/Pools/Earn/Bridge/Info) as the mainnet app. Verified genuinely testnet-wired
+(not just named that) by pulling its JS bundle directly and finding Stellar's real testnet
+passphrase (`Test SDF Network ; September 2015`) embedded in the compiled code. Once
+`seed-pools.ps1` runs, our 4 pools should be visible there — a visual sanity check with no
+CLI queries needed.
+
 **Folio contract design** — new function, additive (doesn't touch existing `mint`):
 
 ```
