@@ -6,6 +6,7 @@ members = [
     "contracts/folio",
     "contracts/factory",
     "contracts/mock-price-feed",
+    "contracts/mock-soroswap-router",
 ]
 
 [workspace.package]
@@ -20,6 +21,7 @@ stellar-tokens = "0.7.2"
 nebula-interfaces = { path = "crates/nebula-interfaces" }
 nebula-oracle-router = { path = "contracts/oracle-router" }
 nebula-mock-price-feed = { path = "contracts/mock-price-feed" }
+nebula-mock-soroswap-router = { path = "contracts/mock-soroswap-router" }
 nebula-folio = { path = "contracts/folio" }
 
 # Money code: overflow checks stay ON in release wasm.

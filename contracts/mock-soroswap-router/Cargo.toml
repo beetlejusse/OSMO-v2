@@ -1,6 +1,6 @@
 [package]
-name = "nebula-folio"
-description = "Nebula DTF Folio: multi-asset basket custody with a SEP-41 share token, proportional mint/redeem and oracle NAV"
+name = "nebula-mock-soroswap-router"
+description = "Fixed-rate stand-in for the Soroswap Router, for unit testing mint_single_asset in isolation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,11 +12,7 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
-stellar-tokens = { workspace = true }
 nebula-interfaces = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-nebula-mock-price-feed = { workspace = true }
-nebula-oracle-router = { workspace = true }
-nebula-mock-soroswap-router = { workspace = true }

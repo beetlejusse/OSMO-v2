@@ -15,10 +15,11 @@
 
 #![no_std]
 
-use nebula_interfaces::{OracleRouterClient, PRICE_DECIMALS};
+use nebula_interfaces::{OracleRouterClient, SoroswapRouterClient, PRICE_DECIMALS};
+use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    Address, Env, MuxedAddress, String, Vec,
+    vec, Address, Env, IntoVal, MuxedAddress, String, Symbol, Val, Vec,
 };
 use stellar_tokens::fungible::{burnable::FungibleBurnable, Base, FungibleToken};
 
@@ -50,6 +51,8 @@ pub enum FolioError {
     AmountTooSmall = 7,
     LengthMismatch = 8,
     Overflow = 9,
+    SoroswapNotConfigured = 10,
+    DeadlinePassed = 11,
 }
 
 /// One basket constituent.
@@ -79,6 +82,7 @@ enum DataKey {
     Router,
     Assets,
     Paused,
+    SoroswapRouter,
 }
 
 #[contract]
@@ -235,6 +239,120 @@ impl NebulaFolio {
         deposits
     }
 
+    /// Mint shares by depositing a single asset (e.g. XLM) instead of the
+    /// whole basket. The deposit is split across the basket by each asset's
+    /// current value fraction, and every non-deposit slice is swapped into
+    /// that asset via the real Soroswap Router (see IMPLEMENTATION_PLAN.md
+    /// §2.4; `soroswap_router` must be configured via `set_soroswap_router`).
+    ///
+    /// Fairness (bears its own slippage, never dilutes holders): shares are
+    /// minted from the folio's *actual* USD value gain after the swaps —
+    /// `shares_out = value_added * supply / value_before` — so NAV/share is
+    /// preserved exactly and any AMM slippage/fees reduce only the depositor's
+    /// own shares. `min_shares_out` bounds price movement between quote and
+    /// submission. The whole call is atomic: any leg's swap failing (illiquid
+    /// pool, `min_out`, expired deadline) reverts everything — no partial mint.
+    ///
+    /// Exact-*input* swaps (not exact-output): the folio spends exactly the
+    /// pre-computed slice per leg, letting it pre-authorize that exact
+    /// transfer (a downstream contract spending the folio's own funds needs
+    /// `authorize_as_current_contract`, and auth entries must match args
+    /// exactly). Prices are read once — the oracle is static within a tx.
+    pub fn mint_single_asset(
+        e: Env,
+        user: Address,
+        deposit_token: Address,
+        deposit_amount: i128,
+        min_shares_out: i128,
+        deadline: u64,
+    ) -> i128 {
+        user.require_auth();
+        Self::require_not_paused(&e);
+        extend_ttl(&e);
+        if deposit_amount <= 0 {
+            panic_with_error!(&e, FolioError::AmountTooSmall);
+        }
+        if e.ledger().timestamp() > deadline {
+            panic_with_error!(&e, FolioError::DeadlinePassed);
+        }
+        let supply = Base::total_supply(&e);
+        if supply == 0 {
+            panic_with_error!(&e, FolioError::NotBootstrapped);
+        }
+
+        let soroswap = SoroswapRouterClient::new(&e, &Self::soroswap_router(e.clone()));
+        let oracle = OracleRouterClient::new(&e, &Self::router(e.clone()));
+        let assets = Self::get_assets(e.clone());
+        let this = e.current_contract_address();
+
+        // price the whole basket once; cache prices + per-asset value
+        let mut prices: Vec<i128> = Vec::new(&e);
+        let mut values: Vec<i128> = Vec::new(&e);
+        let mut value_before: i128 = 0;
+        for i in 0..assets.len() {
+            let a = assets.get_unchecked(i);
+            let price = oracle.price(&a.token).price;
+            let bal = token::TokenClient::new(&e, &a.token).balance(&this);
+            let v = muldiv_floor(&e, bal, price, 10i128.pow(a.decimals));
+            prices.push_back(price);
+            values.push_back(v);
+            value_before = value_before
+                .checked_add(v)
+                .unwrap_or_else(|| panic_with_error!(&e, FolioError::Overflow));
+        }
+        if value_before <= 0 {
+            panic_with_error!(&e, FolioError::Overflow);
+        }
+
+        // pull the whole deposit up front so the folio can spend it on swaps
+        token::TokenClient::new(&e, &deposit_token).transfer(&user, &this, &deposit_amount);
+
+        // split by value fraction; swap each non-deposit leg (the deposit
+        // token's own slice simply stays in the folio)
+        for i in 0..assets.len() {
+            let a = assets.get_unchecked(i);
+            if a.token == deposit_token {
+                continue;
+            }
+            let alloc = muldiv_floor(&e, deposit_amount, values.get_unchecked(i), value_before);
+            if alloc <= 0 {
+                continue;
+            }
+            let path = vec![&e, deposit_token.clone(), a.token.clone()];
+            let pair = soroswap.router_pair_for(&deposit_token, &a.token);
+            // authorize the router to move exactly `alloc` of deposit_token
+            // from this folio into the pair (folio isn't the direct caller of
+            // that transfer, so mock/implicit auth doesn't cover it)
+            authorize_transfer(&e, &deposit_token, &this, &pair, alloc);
+            soroswap.swap_exact_tokens_for_tokens(&alloc, &0i128, &path, &this, &deadline);
+        }
+
+        // mint from the value actually added (depositor bears own slippage)
+        let mut value_after: i128 = 0;
+        for i in 0..assets.len() {
+            let a = assets.get_unchecked(i);
+            let bal = token::TokenClient::new(&e, &a.token).balance(&this);
+            let v = muldiv_floor(&e, bal, prices.get_unchecked(i), 10i128.pow(a.decimals));
+            value_after = value_after
+                .checked_add(v)
+                .unwrap_or_else(|| panic_with_error!(&e, FolioError::Overflow));
+        }
+        let added = value_after - value_before;
+        if added <= 0 {
+            panic_with_error!(&e, FolioError::SlippageExceeded);
+        }
+        let shares_out = muldiv_floor(&e, added, supply, value_before);
+        if shares_out <= 0 || shares_out < min_shares_out {
+            panic_with_error!(&e, FolioError::SlippageExceeded);
+        }
+        Base::mint(&e, &user, shares_out);
+        e.events().publish(
+            (symbol_short!("mint_sa"), &user),
+            (shares_out, deposit_amount, added),
+        );
+        shares_out
+    }
+
     /// Burn `shares` and receive every basket asset pro-rata:
     /// `out_i = floor(bal_i * shares / supply)`. Never pausable, oracle-free.
     /// Returns the amounts paid out.
@@ -333,6 +451,15 @@ impl NebulaFolio {
         e.storage().instance().get(&DataKey::Router).unwrap()
     }
 
+    /// The Soroswap Router used by `mint_single_asset`. Traps with a clear
+    /// error (rather than the generic missing-key panic) if never set.
+    pub fn soroswap_router(e: Env) -> Address {
+        e.storage()
+            .instance()
+            .get(&DataKey::SoroswapRouter)
+            .unwrap_or_else(|| panic_with_error!(&e, FolioError::SoroswapNotConfigured))
+    }
+
     pub fn paused(e: Env) -> bool {
         e.storage().instance().get(&DataKey::Paused).unwrap()
     }
@@ -349,6 +476,14 @@ impl NebulaFolio {
     pub fn set_router(e: Env, router: Address) {
         Self::admin(e.clone()).require_auth();
         e.storage().instance().set(&DataKey::Router, &router);
+    }
+
+    /// Configure (or change) the Soroswap Router used by `mint_single_asset`.
+    /// Deliberately not a constructor param — avoids a Factory redeploy just
+    /// to wire an external dependency; set once by admin after deploying.
+    pub fn set_soroswap_router(e: Env, soroswap_router: Address) {
+        Self::admin(e.clone()).require_auth();
+        e.storage().instance().set(&DataKey::SoroswapRouter, &soroswap_router);
     }
 
     fn require_not_paused(e: &Env) {
@@ -370,6 +505,23 @@ impl FungibleBurnable for NebulaFolio {}
 
 fn extend_ttl(e: &Env) {
     e.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+}
+
+/// Pre-authorize `token.transfer(from, to, amount)` performed by a contract
+/// this folio calls (the router). Required because the folio, not being the
+/// direct caller of that transfer, must explicitly authorize spending its own
+/// funds; args must match the eventual call exactly (hence exact-input swaps).
+fn authorize_transfer(e: &Env, token: &Address, from: &Address, to: &Address, amount: i128) {
+    let args: Vec<Val> = (from.clone(), to.clone(), amount).into_val(e);
+    let entry = InvokerContractAuthEntry::Contract(SubContractInvocation {
+        context: ContractContext {
+            contract: token.clone(),
+            fn_name: Symbol::new(e, "transfer"),
+            args,
+        },
+        sub_invocations: vec![e],
+    });
+    e.authorize_as_current_contract(vec![e, entry]);
 }
 
 fn muldiv_floor(e: &Env, a: i128, b: i128, denom: i128) -> i128 {

@@ -57,7 +57,7 @@
               "function_name": "create_folio",
               "args": [
                 {
-                  "bytes": "1d36ec54e63d5881d685ed281676c16241978934de4e8aaf6a398f6896f0bb59"
+                  "bytes": "4fc6159e7cd71634e9755c742027363ea4ed68e46adab239d7a34be8ea436e12"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -334,7 +334,7 @@
                       "val": {
                         "vec": [
                           {
-                            "address": "CASBN63A5GXB47HYIU7RGG5M5SXTUNBUUB5ZGYXH4IZGEMYK447MT74C"
+                            "address": "CANPGKE75VHH3GEPTVZLAJWL6X43KIN4CIDGTEBHTLOEBLIQXKJSOPJO"
                           }
                         ]
                       }
@@ -354,7 +354,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CASBN63A5GXB47HYIU7RGG5M5SXTUNBUUB5ZGYXH4IZGEMYK447MT74C",
+              "contract": "CANPGKE75VHH3GEPTVZLAJWL6X43KIN4CIDGTEBHTLOEBLIQXKJSOPJO",
               "key": "ledger_key_contract_instance",
               "durability": "persistent",
               "val": {

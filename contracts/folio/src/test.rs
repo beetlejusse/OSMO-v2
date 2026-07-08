@@ -3,6 +3,7 @@
 use crate::{FolioError, NebulaFolio, NebulaFolioClient};
 use nebula_interfaces::OracleAsset;
 use nebula_mock_price_feed::{MockPriceFeed, MockPriceFeedClient};
+use nebula_mock_soroswap_router::{MockSoroswapRouter, MockSoroswapRouterClient};
 use nebula_oracle_router::{NebulaOracleRouter, NebulaOracleRouterClient};
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
@@ -355,4 +356,177 @@ fn share_token_metadata_and_transfer() {
     // transferee can redeem
     let outs = s.folio.redeem(&user2, &(10 * D7));
     assert_eq!(outs.get_unchecked(0), GOOD_DEPOSITS[0] / 10);
+}
+
+// --- mint_single_asset ---
+// Basket is tokens[0]="XLM" 50% / tokens[1]="USDC" 30% / tokens[2]="AQUA" 20%
+// at prices $0.25 / $1.00 / $0.0004 (see PRICES/WEIGHTS above). Depositing
+// tokens[0]: its own value-slice stays as tokens[0], the other two slices
+// swap through the mock router. Mock rate is OUTPUT-per-input, 7-dec fixed
+// point: amount_out = amount_in * rate / 10^7.
+
+const DEADLINE: u64 = NOW + 300;
+
+// rates that exactly match the oracle cross-rates (zero slippage):
+//   token0->token1: $0.25 -> $1.00, so 0.25 out per in -> 0.25 * 10^7
+const RATE_T0_T1_FAIR: i128 = 2_500_000;
+//   token0->token2: $0.25 -> $0.0004, so 625 out per in -> 625 * 10^7
+const RATE_T0_T2_FAIR: i128 = 6_250_000_000;
+
+struct SingleAssetSetup {
+    s: Setup,
+    depositor: Address,
+}
+
+/// Wires a mock router with the given token0->token1 / token0->token2 rates,
+/// funds it to pay out, and funds a fresh depositor with 1,000 token0 only.
+fn setup_single_asset(rate_1: i128, rate_2: i128) -> SingleAssetSetup {
+    let s = setup();
+    s.folio.init_mint(&s.user, &deposits(&s, GOOD_DEPOSITS));
+
+    let router_id = s.e.register(MockSoroswapRouter, (&s.admin,));
+    let router = MockSoroswapRouterClient::new(&s.e, &router_id);
+    let t0 = s.tokens.get_unchecked(0);
+    let t1 = s.tokens.get_unchecked(1);
+    let t2 = s.tokens.get_unchecked(2);
+    router.set_rate(&t0, &t1, &rate_1);
+    router.set_rate(&t0, &t2, &rate_2);
+    // fund the router (acts as its own pool) so it can pay outputs
+    s.sac_admins[1].mint(&router_id, &(1_000_000 * D7));
+    s.sac_admins[2].mint(&router_id, &(1_000_000_000 * D7));
+
+    s.folio.set_soroswap_router(&router_id);
+
+    let depositor = Address::generate(&s.e);
+    s.sac_admins[0].mint(&depositor, &(1_000 * D7));
+
+    SingleAssetSetup { s, depositor }
+}
+
+#[test]
+fn mint_single_asset_mints_fair_shares() {
+    // deposit 40 token0 (=$10) into a $100 folio. Split by value: 50% stays
+    // as token0 (20), 30% -> token1 (12 t0 -> 3 t1), 20% -> token2 (8 t0 ->
+    // 5000 t2). Value added = $10 -> 10 shares at $1.00/share.
+    let sa = setup_single_asset(RATE_T0_T1_FAIR, RATE_T0_T2_FAIR);
+    let t0 = sa.s.tokens.get_unchecked(0);
+    let shares = sa.s.folio.mint_single_asset(&sa.depositor, &t0, &(40 * D7), &(10 * D7), &DEADLINE);
+
+    assert_eq!(shares, 10 * D7);
+    assert_eq!(sa.s.folio.balance(&sa.depositor), 10 * D7);
+    // depositor spent the whole deposit (no refund in exact-input design)
+    assert_eq!(
+        TokenClient::new(&sa.s.e, &t0).balance(&sa.depositor),
+        1_000 * D7 - 40 * D7
+    );
+    // basket grew proportionally
+    let bals = sa.s.folio.balances();
+    assert_eq!(bals.get_unchecked(0), GOOD_DEPOSITS[0] + 20 * D7);
+    assert_eq!(bals.get_unchecked(1), GOOD_DEPOSITS[1] + 3 * D7);
+    assert_eq!(bals.get_unchecked(2), GOOD_DEPOSITS[2] + 5_000 * D7);
+    // NAV/share preserved: $110 over 110 shares = $1.00
+    assert_eq!(sa.s.folio.nav().per_share, 10i128.pow(14));
+}
+
+#[test]
+fn mint_single_asset_slippage_reduces_shares_and_can_trip_min() {
+    // token1 leg pays only half the fair rate: 12 t0 -> 1.5 t1 instead of 3.
+    // value added = 55 (t0) + 31.5 (t1) + 22 (t2) - 100 = $8.5 -> 8.5 shares.
+    // depositor bears the slippage; existing holders are NOT diluted.
+    let sa = setup_single_asset(RATE_T0_T1_FAIR / 2, RATE_T0_T2_FAIR);
+    let t0 = sa.s.tokens.get_unchecked(0);
+
+    // demanding 10 shares reverts - only 8.5 of value actually landed
+    assert_eq!(
+        sa.s.folio.try_mint_single_asset(&sa.depositor, &t0, &(40 * D7), &(10 * D7), &DEADLINE),
+        Err(Ok(FolioError::SlippageExceeded.into()))
+    );
+    // accepting the honest 8.5 succeeds, and NAV/share never drops below $1
+    let shares = sa.s.folio.mint_single_asset(&sa.depositor, &t0, &(40 * D7), &(8 * D7), &DEADLINE);
+    assert_eq!(shares, 85_000_000); // 8.5 shares
+    assert!(sa.s.folio.nav().per_share >= 10i128.pow(14));
+}
+
+#[test]
+fn mint_single_asset_rejects_when_paused() {
+    let sa = setup_single_asset(RATE_T0_T1_FAIR, RATE_T0_T2_FAIR);
+    sa.s.folio.set_paused(&true);
+    assert_eq!(
+        sa.s.folio.try_mint_single_asset(
+            &sa.depositor,
+            &sa.s.tokens.get_unchecked(0),
+            &(40 * D7),
+            &(10 * D7),
+            &DEADLINE,
+        ),
+        Err(Ok(FolioError::Paused.into()))
+    );
+}
+
+#[test]
+fn mint_single_asset_requires_bootstrap() {
+    let s = setup(); // no init_mint
+    let router_id = s.e.register(MockSoroswapRouter, (&s.admin,));
+    s.folio.set_soroswap_router(&router_id);
+    let depositor = Address::generate(&s.e);
+    s.sac_admins[0].mint(&depositor, &(1_000 * D7));
+    assert_eq!(
+        s.folio.try_mint_single_asset(
+            &depositor,
+            &s.tokens.get_unchecked(0),
+            &(40 * D7),
+            &(1),
+            &DEADLINE,
+        ),
+        Err(Ok(FolioError::NotBootstrapped.into()))
+    );
+}
+
+#[test]
+fn mint_single_asset_rejects_expired_deadline() {
+    let sa = setup_single_asset(RATE_T0_T1_FAIR, RATE_T0_T2_FAIR);
+    assert_eq!(
+        sa.s.folio.try_mint_single_asset(
+            &sa.depositor,
+            &sa.s.tokens.get_unchecked(0),
+            &(40 * D7),
+            &(10 * D7),
+            &(NOW - 1),
+        ),
+        Err(Ok(FolioError::DeadlinePassed.into()))
+    );
+}
+
+#[test]
+fn mint_single_asset_rejects_below_min_shares_out() {
+    let sa = setup_single_asset(RATE_T0_T1_FAIR, RATE_T0_T2_FAIR);
+    // demand more shares than the deposit's value can buy (10 possible, ask 11)
+    assert_eq!(
+        sa.s.folio.try_mint_single_asset(
+            &sa.depositor,
+            &sa.s.tokens.get_unchecked(0),
+            &(40 * D7),
+            &(11 * D7),
+            &DEADLINE,
+        ),
+        Err(Ok(FolioError::SlippageExceeded.into()))
+    );
+}
+
+#[test]
+fn mint_single_asset_rejects_when_soroswap_not_configured() {
+    let s = setup();
+    s.folio.init_mint(&s.user, &deposits(&s, GOOD_DEPOSITS));
+    let depositor = Address::generate(&s.e);
+    s.sac_admins[0].mint(&depositor, &(1_000 * D7));
+    assert_eq!(
+        s.folio.try_mint_single_asset(
+            &depositor,
+            &s.tokens.get_unchecked(0),
+            &(40 * D7),
+            &(1),
+            &DEADLINE,
+        ),
+        Err(Ok(FolioError::SoroswapNotConfigured.into()))
+    );
 }
