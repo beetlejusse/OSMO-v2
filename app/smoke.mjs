@@ -3,7 +3,7 @@
 import { contract } from "@stellar/stellar-sdk";
 
 const c = await contract.Client.from({
-  contractId: "CCFC3Z74YYOXMRZMXZTSGO4KCARSZW3CDSNLGV63E5RAEBWIGW2E54LB",
+  contractId: "CCOMNDEZSPR7ZXCPCVOKCGQEPAG33UAYTTR526P63P7HIPEXPJXVCQKB",
   networkPassphrase: "Test SDF Network ; September 2015",
   rpcUrl: "https://soroban-testnet.stellar.org",
 });

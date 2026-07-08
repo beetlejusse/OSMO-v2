@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { FAUCET_AMOUNTS, PRICE_DECIMALS, SHARE_DECIMALS, TOKEN_INFO } from "./config";
+import { FAUCET_AMOUNTS, POOLS, PRICE_DECIMALS, SHARE_DECIMALS, TOKEN_INFO, XLM_TOKEN } from "./config";
 import { dripTestTokens } from "./lib/faucet";
 import {
   AssetInfo,
   NavInfo,
+  PoolReserves,
   PriceData,
   addTrustlines,
   connectWallet,
@@ -11,13 +12,16 @@ import {
   fetchAssets,
   fetchBalances,
   fetchNav,
+  fetchPoolReserves,
   fetchShareBalance,
   fetchTotalSupply,
   fmtUnits,
   getMissingTrustlines,
   parseUnits,
   quoteMint,
+  quoteMintSingle,
   sendMint,
+  sendMintSingle,
   sendRedeem,
   toBig,
 } from "./lib/folio";
@@ -74,6 +78,9 @@ export default function App() {
   const [redeemShares, setRedeemShares] = useState("");
   const [busy, setBusy] = useState(false);
   const [missingTrustlines, setMissingTrustlines] = useState<{ code: string; issuer: string }[]>([]);
+  const [xlmDeposit, setXlmDeposit] = useState("");
+  const [singleQuote, setSingleQuote] = useState<bigint | null>(null);
+  const [pools, setPools] = useState<Record<string, PoolReserves | null>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -90,6 +97,9 @@ export default function App() {
     if (assets.length) {
       fetchAssetPrices(assets.map((a) => a.token)).then(setPrices);
     }
+    Promise.all(POOLS.map((p) => fetchPoolReserves(p.id))).then((rs) =>
+      setPools(Object.fromEntries(POOLS.map((p, i) => [p.id, rs[i]]))),
+    );
   }, [wallet, assets]);
 
   useEffect(() => {
@@ -176,6 +186,36 @@ export default function App() {
       await refresh();
     } catch (e: any) {
       setStatus(`Mint failed: ${e.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onQuoteSingle() {
+    if (!wallet || !xlmDeposit) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      setSingleQuote(await quoteMintSingle(wallet, XLM_TOKEN, parseUnits(xlmDeposit, 7)));
+    } catch (e: any) {
+      setStatus(`Quote failed: ${e.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onMintSingle() {
+    if (!wallet || !xlmDeposit || singleQuote === null) return;
+    setBusy(true);
+    setStatus("Depositing XLM → basket…");
+    try {
+      const got = await sendMintSingle(wallet, XLM_TOKEN, parseUnits(xlmDeposit, 7), singleQuote);
+      setStatus(`Minted ${fmtUnits(got, SHARE_DECIMALS, 4)} SEF from ${xlmDeposit} XLM ✓`);
+      setSingleQuote(null);
+      setXlmDeposit("");
+      await refresh();
+    } catch (e: any) {
+      setStatus(`Deposit failed: ${e.message ?? e}`);
     } finally {
       setBusy(false);
     }
@@ -287,6 +327,39 @@ export default function App() {
         </section>
       )}
 
+      {wallet && (
+        <section className="card highlight">
+          <h2>Deposit XLM → get the basket ✨</h2>
+          <p className="muted">
+            One asset in, whole basket out: the contract swaps your XLM across every basket
+            token via Soroswap and mints SEF — no need to hold all five yourself.
+          </p>
+          <div className="single-deposit">
+            <input
+              placeholder="XLM to deposit e.g. 20"
+              value={xlmDeposit}
+              onChange={(e) => {
+                setXlmDeposit(e.target.value);
+                setSingleQuote(null);
+              }}
+              disabled={busy}
+            />
+            {singleQuote !== null ? (
+              <>
+                <span className="quote-inline">≈ {fmtUnits(singleQuote, SHARE_DECIMALS, 4)} SEF</span>
+                <button onClick={onMintSingle} disabled={busy}>
+                  Confirm deposit
+                </button>
+              </>
+            ) : (
+              <button onClick={onQuoteSingle} disabled={busy || !xlmDeposit}>
+                Quote
+              </button>
+            )}
+          </div>
+        </section>
+      )}
+
       <section className="card">
         <h2>Your position</h2>
         <p>
@@ -361,8 +434,42 @@ export default function App() {
         {status && <p className="status">{status}</p>}
       </section>
 
+      <section className="card">
+        <h2>Liquidity pools</h2>
+        <p className="muted">
+          Live reserves of the Soroswap pools the single-asset deposit swaps through, read
+          straight from each pair contract.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Soroswap pool</th>
+              <th>XLM reserve</th>
+              <th>Paired reserve</th>
+            </tr>
+          </thead>
+          <tbody>
+            {POOLS.map((p) => {
+              const r = pools[p.id];
+              // pair contract orders reserves by token address; XLM is token1
+              // in every one of our pools (checked at seed time)
+              return (
+                <tr key={p.id}>
+                  <td>
+                    <span className="dot" style={{ background: TOKEN_INFO[p.token]?.color ?? "#888" }} />
+                    {p.pair}
+                  </td>
+                  <td>{r ? fmtUnits(r.reserve1, 7, 2) : "—"}</td>
+                  <td>{r ? `${fmtUnits(r.reserve0, 7, 2)} ${TOKEN_INFO[p.token]?.symbol ?? ""}` : "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
       <footer>
-        Testnet · proportional mint/redeem, no swaps · redemption is never pausable
+        Testnet · deposit-XLM single-asset mint via Soroswap · redemption is never pausable
       </footer>
     </main>
   );

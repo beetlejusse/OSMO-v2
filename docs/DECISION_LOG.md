@@ -310,3 +310,47 @@ intermediate values exceed int64).
   session's research, not just in theory but with real transactions on real infrastructure.
 - **Deferred:** the `mint_single_asset` Folio function itself — the pools existing is the
   prerequisite, not the feature. Next actual build step.
+
+### ADR-016 — Single-asset deposit: exact-input swaps + authorize_as_current_contract
+**Decision:** `mint_single_asset(user, deposit_token, deposit_amount, min_shares_out, deadline)`
+lets a user deposit one asset (e.g. XLM); the Folio splits it by each basket asset's current
+value fraction, swaps every non-deposit slice into that asset via the real Soroswap Router,
+and mints shares from the folio's *actual* post-swap value gain
+(`shares_out = value_added × supply / value_before`).
+**Why this shape (learned from a failing test, not guessed):**
+1. **`authorize_as_current_contract` is mandatory.** When the Folio (a contract) calls the
+   router and the router moves the Folio's tokens, the Folio must explicitly authorize that
+   sub-transfer — `mock_all_auths` does not cover it and neither does implicit caller-auth
+   (the router, not the folio, is the direct caller of `transfer`). The unit test caught this
+   as `Error(Auth, InvalidAction)`; it's real production behavior, verified again live on-chain.
+2. **Exact-input, not exact-output.** Auth entries must match the transfer args *exactly*.
+   An exact-output swap's input amount isn't known until execution, so it can't be
+   pre-authorized without an extra `router_get_amounts_in` round-trip. Exact-input swaps let
+   the Folio authorize the precise amount it chose to spend. (Interface switched to
+   `swap_exact_tokens_for_tokens` + `router_pair_for` accordingly.)
+3. **Mint from actual value added, not deposit value.** This makes the depositor bear their
+   own AMM slippage/fees and preserves NAV/share exactly for existing holders — no dilution.
+   `min_shares_out` bounds price movement between quote and submission; the whole call is
+   atomic (any leg failing reverts everything).
+**Verified end-to-end live 2026-07-08:** deposited 20 XLM into Folio v2, 4 real swaps through
+our seeded pools executed in a single transaction (resource budget fits), 3.86 SEF minted,
+NAV/share held at $1.00.
+
+### [2026-07-08] Single-asset deposit shipped — contract, tests, Folio v2, app
+- **Built:** `nebula-interfaces` SoroswapRouter client (`swap_exact_tokens_for_tokens`,
+  `router_pair_for`); `mint_single_asset` + `set_soroswap_router`/`soroswap_router` in the
+  Folio; `nebula-mock-soroswap-router` crate (fixed-rate stand-in, is its own pool) for
+  isolated unit tests; 7 new folio tests (fair-shares, slippage-reduces-shares-and-trips-min,
+  paused, bootstrap, deadline, min-shares, not-configured). 38 tests green workspace-wide;
+  folio wasm 27 KB.
+- **Deployed:** Folio **v2 `CCOMNDEZSPR7ZXCPCVOKCGQEPAG33UAYTTR526P63P7HIPEXPJXVCQKB`** via the
+  factory (ADR-006 versioning — old folio `CCFC3Z…E54LB` untouched), wired to Soroswap, bootstrapped.
+  `scripts/deploy-folio-v2.ps1` (reproducible, reuses existing tokens/pools).
+- **App:** `.env`/config repointed to v2 + pool addresses; new "Deposit XLM → get the basket"
+  card (simulate-first quote, 1%-buffered `min_shares_out`) and a "Liquidity pools" card
+  reading each Soroswap pair's reserves directly (the public Soroswap testnet dashboard indexes
+  only pools created through its own UI, so ours weren't listed there — reading chain state
+  sidesteps that entirely). Build clean; smoke test green against v2.
+- **Deferred:** browser click-through of the deposit flow (contract path proven live via CLI;
+  UI wiring built + type-checked but not manually driven in a browser). `#[contractevent]`
+  migration (cosmetic warnings persist).

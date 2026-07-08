@@ -248,6 +248,72 @@ export async function sendRedeem(
   return unwrapResult(result);
 }
 
+/**
+ * Single-asset deposit: deposit `depositAmount` of `depositToken` (e.g. XLM),
+ * the contract swaps into the whole basket via Soroswap and mints shares.
+ * Simulate first (no signature) to preview the shares, then send.
+ */
+export async function quoteMintSingle(
+  publicKey: string,
+  depositToken: string,
+  depositAmount: bigint,
+): Promise<bigint> {
+  const c = await getWriteClient(publicKey);
+  const tx = await c.mint_single_asset({
+    user: publicKey,
+    deposit_token: depositToken,
+    deposit_amount: depositAmount,
+    min_shares_out: 0n,
+    deadline: BigInt(Math.floor(Date.now() / 1000) + 300),
+  });
+  return toBig(unwrapResult<bigint>(tx.result));
+}
+
+export async function sendMintSingle(
+  publicKey: string,
+  depositToken: string,
+  depositAmount: bigint,
+  quotedShares: bigint,
+): Promise<bigint> {
+  const c = await getWriteClient(publicKey);
+  // accept up to 1% fewer shares than quoted (pool state can shift slightly)
+  const minShares = (toBig(quotedShares) * 99n) / 100n;
+  const tx = await c.mint_single_asset({
+    user: publicKey,
+    deposit_token: depositToken,
+    deposit_amount: depositAmount,
+    min_shares_out: minShares,
+    deadline: BigInt(Math.floor(Date.now() / 1000) + 300),
+  });
+  const { result } = await tx.signAndSend();
+  return toBig(unwrapResult<bigint>(result));
+}
+
+// --- pools (read reserves straight from each Soroswap pair contract) ---
+
+export interface PoolReserves {
+  reserve0: bigint;
+  reserve1: bigint;
+}
+
+const poolClients: Record<string, AnyClient> = {};
+
+export async function fetchPoolReserves(poolId: string): Promise<PoolReserves | null> {
+  try {
+    if (!poolClients[poolId]) {
+      poolClients[poolId] = (await contract.Client.from({
+        contractId: poolId,
+        networkPassphrase: NETWORK_PASSPHRASE,
+        rpcUrl: RPC_URL,
+      })) as AnyClient;
+    }
+    const res = unwrapResult<bigint[]>((await poolClients[poolId].get_reserves()).result);
+    return { reserve0: toBig(res[0]), reserve1: toBig(res[1]) };
+  } catch {
+    return null; // pool not seeded yet
+  }
+}
+
 // --- formatting ---
 
 /** Coerce a chain-returned i128 (bigint/number/string, SDK-build-dependent) to bigint. */

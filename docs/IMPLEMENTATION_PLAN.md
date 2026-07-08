@@ -240,10 +240,17 @@ same nav (Swap/Pools/Earn/Bridge/Info) as the mainnet app. Verified genuinely te
 passphrase (`Test SDF Network ; September 2015`) embedded in the compiled code. Our 4 pools
 should now be visible there.
 
-**Next step, not yet built:** the `mint_single_asset` Folio function itself (design above)
-can now be implemented against real, live pools instead of a hypothetical.
+**✅ Built and verified live (2026-07-08).** `mint_single_asset` shipped in Folio v2, tested
+end-to-end on testnet (deposit 20 XLM → 4 real Soroswap swaps → 3.86 SEF minted, one atomic
+tx). The final design differs from the sketch below in two ways learned from implementation
+(see DECISION_LOG ADR-016): (1) **exact-input** swaps, not exact-output — so the Folio can
+`authorize_as_current_contract` the precise amount it spends (a contract's own funds moved by
+a downstream contract *must* be explicitly authorized; a unit test caught this); (2) shares
+are minted from the folio's **actual post-swap value gain**, so the depositor bears their own
+slippage and existing holders are never diluted. The original sketch is kept below for the
+reasoning trail.
 
-**Folio contract design** — new function, additive (doesn't touch existing `mint`):
+**Folio contract design** (original sketch — superseded by ADR-016, kept for history):
 
 ```
 mint_single_asset(user, deposit_token, deposit_amount, shares_out, max_deposit_amount, deadline)

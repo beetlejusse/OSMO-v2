@@ -75,7 +75,7 @@ Tick an item only when its code exists **and** its test passes. Full context in
 - [ ] Allbridge Core native-USDC inflow
 - [ ] Axelar ITS inbound hook (TokenManager → Folio → mint shares)
 - [ ] axlETH/axlBTC/axlSOL Folio (segregated, risk-labeled UI)
-- [ ] Soroswap single-asset deposit (USDC → basket, `out_min` per leg)
+- [x] **Soroswap single-asset deposit** (`mint_single_asset`, ADR-016) — pulled early into Folio v2; deposit XLM → basket via real seeded Soroswap pools; verified live 2026-07-08 (deposit 20 XLM → 4 swaps → 3.86 SEF). App: deposit card + live pools reserves page. ⏳ browser click-through pending.
 - [ ] SCF Build Award submitted; audit slot secured
 
 ## Phase 3 — Regulated assets (2027)

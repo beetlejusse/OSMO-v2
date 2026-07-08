@@ -27,6 +27,12 @@ h1 { font-size: 1.5rem; }
 }
 .faucet { border-color: var(--accent); }
 .faucet p { color: var(--muted); font-size: 0.9rem; }
+.highlight { border-color: var(--accent); background: linear-gradient(180deg, rgba(159,78,245,0.10), var(--card)); }
+.muted { color: var(--muted); font-size: 0.9rem; }
+.single-deposit { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.single-deposit input { flex: 1; min-width: 180px; margin-bottom: 0; }
+.single-deposit button { white-space: nowrap; }
+.quote-inline { color: var(--accent); font-weight: 600; }
 .navrow { display: flex; gap: 24px; flex-wrap: wrap; }
 .label { color: var(--muted); font-size: 0.8rem; }
 .big { font-size: 1.4rem; font-weight: 600; }
