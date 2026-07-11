@@ -133,9 +133,12 @@ export default function FolioPage() {
         </CardHeader>
         <CardContent>
           {navError ? (
-            <p className="text-sm text-[#f0883e]">
-              NAV unavailable (oracle guard): {navError}
-            </p>
+            <div className="rounded-md border border-[#f0883e]/40 bg-[#f0883e]/10 px-4 py-3">
+              <p className="text-sm font-semibold text-[#a94d16]">
+                NAV temporarily paused by oracle guard
+              </p>
+              <p className="mt-1 text-sm text-[#a94d16]">{navError}</p>
+            </div>
           ) : nav ? (
             <div className="flex flex-wrap gap-10">
               <Stat
