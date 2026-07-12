@@ -4,6 +4,8 @@ import './globals.css'
 import { SmoothScroll } from '@/components/smooth-scroll';
 import { WalletProvider } from '@/components/app/wallet-provider';
 import { ConnectWalletModal } from '@/components/app/connect-wallet-modal';
+import { Inter, Space_Grotesk, Geist,  Geist_Mono} from "next/font/google";
+import { cn } from '@/lib/utils';
 
 const inter = Inter({subsets:['latin'],variable:'--font-sans'});
 
