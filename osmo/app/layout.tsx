@@ -1,8 +1,6 @@
 import type { Metadata } from 'next'
-import { Geist, Geist_Mono, Inter, Space_Grotesk } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
-import { cn } from "@/lib/utils";
 import { SmoothScroll } from '@/components/smooth-scroll';
 import { WalletProvider } from '@/components/app/wallet-provider';
 import { ConnectWalletModal } from '@/components/app/connect-wallet-modal';
