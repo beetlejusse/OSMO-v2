@@ -22,6 +22,8 @@ import {
 import { useWallet } from "@/components/app/wallet-provider";
 
 const POLL_MS = 5000;
+const ORACLE_GUARD_MESSAGE =
+  "Testnet oracle relay needs a refresh. NAV is paused by the contract's staleness guard, while balances and redeemable folio assets remain readable.";
 
 interface FolioCtx {
   assets: AssetInfo[];
@@ -49,17 +51,34 @@ export function FolioProvider({ children }: { children: React.ReactNode }) {
   const [navError, setNavError] = useState<string>("");
 
   const refresh = useCallback(async () => {
-    try {
-      const [n, b, s] = await Promise.all([fetchNav(), fetchBalances(), fetchTotalSupply()]);
-      setNav(n);
-      setBalances(b);
-      setSupply(s);
+    const [navResult, balancesResult, supplyResult] = await Promise.allSettled([
+      fetchNav(),
+      fetchBalances(),
+      fetchTotalSupply(),
+    ]);
+
+    if (navResult.status === "fulfilled") {
+      setNav(navResult.value);
       setNavError("");
-      if (address) setMyShares(await fetchShareBalance(address));
-    } catch (e: any) {
-      // a tripped oracle breaker (stale/divergent) fails nav() — surface it
-      setNavError(String(e?.message ?? e));
+    } else {
+      setNav(null);
+      setNavError(ORACLE_GUARD_MESSAGE);
     }
+
+    if (balancesResult.status === "fulfilled") {
+      setBalances(balancesResult.value);
+    }
+
+    if (supplyResult.status === "fulfilled") {
+      setSupply(supplyResult.value);
+    }
+
+    if (address) {
+      fetchShareBalance(address).then(setMyShares).catch(() => {});
+    } else {
+      setMyShares(0n);
+    }
+
     if (assets.length) {
       fetchAssetPrices(assets.map((a) => a.token)).then(setPrices);
     }
