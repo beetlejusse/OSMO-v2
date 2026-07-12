@@ -5,6 +5,7 @@
 import {
   getAddress,
   isAllowed,
+  isConnected,
   requestAccess,
   signTransaction,
 } from "@stellar/freighter-api";
@@ -96,6 +97,16 @@ async function getWriteClient(publicKey: string): Promise<AnyClient> {
 }
 
 // --- wallet ---
+
+/** True when the Freighter extension is present in this browser. */
+export async function isFreighterAvailable(): Promise<boolean> {
+  try {
+    const res = await isConnected();
+    return !!res.isConnected;
+  } catch {
+    return false;
+  }
+}
 
 export async function connectWallet(): Promise<string> {
   const access = await requestAccess();
@@ -332,11 +343,19 @@ export async function fetchPoolReserves(poolIndex: string, token: string): Promi
   try {
     if (!/^[0-9a-fA-F]{64}$/.test(poolIndex)) return null;
     const c = await getAquariusClient();
+    // Aquarius requires the pool's ordered token vector (lexicographic by
+    // contract id). We always return reserve0=XLM, reserve1=paired token for UI.
+    const ordered = [XLM_TOKEN, token].sort();
     const res = unwrapResult<bigint[]>((await c.get_reserves({
-      tokens: [XLM_TOKEN, token],
+      tokens: ordered,
       pool_index: poolIndex,
     })).result);
-    return { reserve0: toBig(res[0]), reserve1: toBig(res[1]) };
+    const a = toBig(res[0]);
+    const b = toBig(res[1]);
+    if (ordered[0] === XLM_TOKEN) {
+      return { reserve0: a, reserve1: b };
+    }
+    return { reserve0: b, reserve1: a };
   } catch {
     return null; // pool not configured, not indexed, or not available on this network
   }

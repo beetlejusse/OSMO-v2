@@ -1,20 +1,40 @@
-// TESTNET-ONLY faucet: signs payments as the token issuer directly in the
-// browser (see .env.example for why that's an acceptable trade-off here, and
-// why it must never be done for a real/mainnet issuer). Payments FROM the
-// issuing account are how new units of a classic Stellar asset get into
-// circulation - no separate "mint" call needed, unlike the SAC/Soroban side.
-//
-// The destination must already trust each asset (see getMissingTrustlines /
-// addTrustlines in lib/folio.ts) - a payment to an untrusted asset fails the
-// same way a Folio transfer would.
+// TESTNET funding helpers:
+// 1) Friendbot — free testnet XLM (Aquarius docs recommend this as the entry faucet)
+// 2) OSMO issuer drip — optional self-issued tst* basket tokens (needs secret)
 
 import { Asset, Horizon, Keypair, Operation, TransactionBuilder } from "@stellar/stellar-sdk";
-import { FAUCET_AMOUNTS, HORIZON_URL, NETWORK_PASSPHRASE, TEST_ISSUER_SECRET, TRUSTLINE_ASSETS } from "@/lib/config";
+import {
+  FAUCET_AMOUNTS,
+  HORIZON_URL,
+  NETWORK_PASSPHRASE,
+  TEST_ISSUER_SECRET,
+  TRUSTLINE_ASSETS,
+} from "@/lib/config";
 
 const horizon = new Horizon.Server(HORIZON_URL);
 
+/** Fund an account with testnet XLM via SDF Friendbot (Aquarius's recommended faucet). */
+export async function fundWithFriendbot(destination: string): Promise<void> {
+  const res = await fetch(`https://friendbot.stellar.org?addr=${encodeURIComponent(destination)}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    // Already-funded accounts often return 400 — treat as soft success if account exists.
+    try {
+      await horizon.loadAccount(destination);
+      return;
+    } catch {
+      throw new Error(`Friendbot failed (${res.status}): ${body.slice(0, 200)}`);
+    }
+  }
+}
+
 /** Send one drip of every basket asset (+ some XLM for fees) to `destination`. */
 export async function dripTestTokens(destination: string): Promise<void> {
+  if (!TEST_ISSUER_SECRET) {
+    throw new Error(
+      "Basket-token faucet secret not set. Use Friendbot for XLM, or set NEXT_PUBLIC_TEST_ISSUER_SECRET for tst* drips.",
+    );
+  }
   const issuer = Keypair.fromSecret(TEST_ISSUER_SECRET);
   const issuerAccount = await horizon.loadAccount(issuer.publicKey());
 
